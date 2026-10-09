@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 Digital Bazaar, Inc.
+#
+# SPDX-License-Identifier: BSD-3-Clause
 """Diff two Markdown files and emit a .docx with real Word tracked-changes
 (w:ins/w:del OOXML), not colored/struck text pretending to be track changes.
 Word and Google Docs (on import) both render these as genuine accept/reject

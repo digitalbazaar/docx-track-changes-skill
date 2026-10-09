@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Copyright 2026 Digital Bazaar, Inc.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
 # Builds a redline from tests/fixtures/{old,new}.md and checks, via pandoc,
 # that "accept all" reconstructs new.md's content and "reject all"
 # reconstructs old.md's content. See SKILL.md's Check/eval section.

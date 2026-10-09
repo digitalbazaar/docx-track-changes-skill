@@ -65,3 +65,7 @@ Claude Code discovers `SKILL.md` in either location and lists the skill by
 its frontmatter `name`/`description`; invoke it with `/docx-track-changes`
 or let Claude reach for it when a redline is asked for. The script itself
 has no Claude-specific dependency — it also runs standalone, as above.
+
+## License
+
+[BSD-3-Clause](./LICENSE) © Digital Bazaar, Inc.
