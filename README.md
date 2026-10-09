@@ -28,15 +28,20 @@ know when and how to use this.
 ## Usage
 
 ```
-python3 scripts/build_redline.py OLD.md NEW.md OUT.docx --author "Your Name"
+python3 scripts/build_redline.py OLD.md NEW.md OUT.docx --author "Your Org"
 ```
+
+`--author` is required — this is a shared public tool with no org or agent
+name of its own, so it will not guess whose name belongs in your reviewers'
+document. Set `REDLINE_AUTHOR` once (e.g. in your shell profile or CI
+config) instead of passing `--author` on every call.
 
 Typical case: diffing a file at two git refs.
 
 ```
 git show main:path/to/doc.md > /tmp/old.md
 cp path/to/doc.md /tmp/new.md   # working tree / branch version
-python3 scripts/build_redline.py /tmp/old.md /tmp/new.md redline.docx --author "Your Name"
+python3 scripts/build_redline.py /tmp/old.md /tmp/new.md redline.docx --author "Your Org"
 ```
 
 Upload `redline.docx` to Google Docs (File → Open, or drag into Drive) to

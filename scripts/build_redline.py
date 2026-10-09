@@ -15,9 +15,12 @@ block-vs-word diffing strategy.
 """
 import argparse
 import itertools
+import os
 import re
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
+
+DEFAULT_AUTHOR = os.environ.get("REDLINE_AUTHOR")
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -124,11 +127,20 @@ def block_key(b):
 # ---------- inline formatting parser ----------
 
 def parse_inline(text):
-    """Returns list of (text, flags). A run of 1+ '~' toggles strike (so
-    both ~x~ and ~~x~~ work); '_' or a lone '*' toggles italic; '**' toggles
-    bold; backtick spans are literal."""
+    """Returns list of (text, flags). '`code`', '**bold**', '_italic_'/
+    '*italic*', and '~strike~'/'~~strike~~' spans all require a matching
+    closing delimiter later in the text; an unpaired delimiter (a lone
+    underscore in a word like "file_name", a stray asterisk or tilde) is
+    left as a literal character instead of toggling formatting on for the
+    rest of the block. Delimiters nest correctly (e.g. "**bold _and
+    italic_**"), but content is not recursively re-parsed across different
+    delimiter *spans* placed side by side -- only true nesting (one
+    delimiter opened inside another, closed before the outer one) combines."""
+    return _parse_inline(text, bold=False, italic=False, strike=False)
+
+
+def _parse_inline(text, bold, italic, strike):
     runs = []
-    bold = italic = strike = False
     buf = ""
     i = 0
     n = len(text)
@@ -148,23 +160,33 @@ def parse_inline(text):
                 i = end + 1
                 continue
         if text[i:i + 2] == "**":
-            flush()
-            bold = not bold
-            i += 2
-            continue
+            end = text.find("**", i + 2)
+            if end != -1:
+                flush()
+                runs.extend(_parse_inline(text[i + 2:end], True, italic, strike))
+                i = end + 2
+                continue
         if text[i] == "~":
-            flush()
-            strike = not strike
-            j = i + 1
+            j = i
             while j < n and text[j] == "~":
                 j += 1
-            i = j
-            continue
+            close_start = text.find("~", j)
+            if close_start != -1:
+                close_end = close_start
+                while close_end < n and text[close_end] == "~":
+                    close_end += 1
+                flush()
+                runs.extend(_parse_inline(text[j:close_start], bold, italic, True))
+                i = close_end
+                continue
         if text[i] in "_*":
-            flush()
-            italic = not italic
-            i += 1
-            continue
+            delim = text[i]
+            end = text.find(delim, i + 1)
+            if end != -1:
+                flush()
+                runs.extend(_parse_inline(text[i + 1:end], bold, True, strike))
+                i = end + 1
+                continue
         buf += text[i]
         i += 1
     flush()
@@ -293,9 +315,12 @@ def render_table(doc, rl, rows, inserted_row_idx=None, deleted_all=False):
     for r_i, row in enumerate(rows):
         row_cells = table.add_row().cells
         mark_whole_row_ins = (inserted_row_idx == "ALL") or (inserted_row_idx == r_i)
+        if len(row) != ncols:
+            raise ValueError(
+                f"table row {r_i} has {len(row)} cell(s), expected {ncols} "
+                f"(from the header row) -- fix the ragged markdown table "
+                f"before regenerating: {row!r}")
         for c_i, cell_text in enumerate(row):
-            if c_i >= ncols:
-                continue
             cell = row_cells[c_i]
             p = cell.paragraphs[0]
             toks = inline_to_tokens(cell_text)
@@ -303,6 +328,7 @@ def render_table(doc, rl, rows, inserted_row_idx=None, deleted_all=False):
                 toks = [(w, {**f, "bold": True}) for w, f in toks]
             if deleted_all:
                 rl.render_tokens(p, toks, "del")
+                rl.mark_row_tracked(cell._tc, "del")
             elif mark_whole_row_ins:
                 rl.render_tokens(p, toks, "ins")
                 rl.mark_row_tracked(cell._tc, "ins")
@@ -314,17 +340,26 @@ def render_table_row_diff(doc, rl, old_rows, new_rows):
     old_keys = ["|".join(r) for r in old_rows]
     new_keys = ["|".join(r) for r in new_rows]
     sm = SequenceMatcher(None, old_keys, new_keys, autojunk=False)
-    ncols = len(new_rows[0]) if new_rows else (len(old_rows[0]) if old_rows else 0)
+    old_ncols = len(old_rows[0]) if old_rows else 0
+    new_ncols = len(new_rows[0]) if new_rows else 0
+    # old and new table versions may legitimately differ in column count (a
+    # column added/removed is a valid edit, not raggedness); render at the
+    # wider of the two and pad the narrower side's rows.
+    ncols = max(old_ncols, new_ncols)
     table = doc.add_table(rows=0, cols=ncols)
     table.style = "Table Grid"
     row_i = 0
 
-    def add_row(cells_text, action):
+    def add_row(cells_text, action, expected_ncols):
         nonlocal row_i
+        if len(cells_text) != expected_ncols:
+            raise ValueError(
+                f"table row {row_i} has {len(cells_text)} cell(s), expected "
+                f"{expected_ncols} (from its table's own header row) -- fix "
+                f"the ragged markdown table before regenerating: {cells_text!r}")
         row_cells = table.add_row().cells
-        for c_i, cell_text in enumerate(cells_text):
-            if c_i >= ncols:
-                continue
+        padded = list(cells_text) + [""] * (ncols - len(cells_text))
+        for c_i, cell_text in enumerate(padded):
             cell = row_cells[c_i]
             p = cell.paragraphs[0]
             toks = inline_to_tokens(cell_text)
@@ -340,18 +375,18 @@ def render_table_row_diff(doc, rl, old_rows, new_rows):
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
         if tag == "equal":
             for k in range(i1, i2):
-                add_row(new_rows[j1 + (k - i1)], None)
+                add_row(new_rows[j1 + (k - i1)], None, new_ncols)
         elif tag == "delete":
             for k in range(i1, i2):
-                add_row(old_rows[k], "del")
+                add_row(old_rows[k], "del", old_ncols)
         elif tag == "insert":
             for k in range(j1, j2):
-                add_row(new_rows[k], "ins")
+                add_row(new_rows[k], "ins", new_ncols)
         elif tag == "replace":
             for k in range(i1, i2):
-                add_row(old_rows[k], "del")
+                add_row(old_rows[k], "del", old_ncols)
             for k in range(j1, j2):
-                add_row(new_rows[k], "ins")
+                add_row(new_rows[k], "ins", new_ncols)
 
 
 def render_block_plain(doc, rl, block):
@@ -368,6 +403,8 @@ def render_block_plain(doc, rl, block):
 def render_block_tracked(doc, rl, block, action):
     p = new_paragraph_for_block(doc, block)
     if block["type"] == "hr":
+        rl.append_tracked_run(p, "—" * 24, action,
+                               {"bold": False, "italic": False, "strike": False})
         return
     if block["type"] == "table":
         render_table(doc, rl, block["rows"], inserted_row_idx="ALL" if action == "ins" else None,
@@ -410,8 +447,14 @@ def build(old_blocks, new_blocks, doc, rl):
                     render_block_tracked(doc, rl, nb, "ins")
 
 
-def build_redline(old_text, new_text, author, date=None):
+def build_redline(old_text, new_text, author=DEFAULT_AUTHOR, date=None):
     """Returns a docx.Document with tracked changes from old_text to new_text."""
+    if not author:
+        raise ValueError(
+            "author is required (pass author=... or set REDLINE_AUTHOR) -- "
+            "this tool has no default attribution. A generic placeholder or "
+            "someone else's org name silently committed to a document is "
+            "worse than an explicit error.")
     date = date or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     rl = Redliner(author, date)
     doc = Document()
@@ -425,11 +468,18 @@ def main():
     ap.add_argument("old", help="path to the original Markdown file")
     ap.add_argument("new", help="path to the revised Markdown file")
     ap.add_argument("out", help="output .docx path")
-    ap.add_argument("--author", default="AI Redline",
-                     help="name attributed to the tracked changes (default: %(default)s)")
+    ap.add_argument("--author", default=DEFAULT_AUTHOR,
+                     help="name attributed to the tracked changes. Required: pass "
+                          "this or set REDLINE_AUTHOR. No default is provided on "
+                          "purpose -- this is a shared public tool, not tied to "
+                          "any one org or agent, so it will not guess whose name "
+                          "belongs in your reviewers' document.")
     ap.add_argument("--date", default=None,
                      help="ISO-8601 UTC timestamp for the revisions (default: now)")
     args = ap.parse_args()
+    if not args.author:
+        ap.error("--author is required (or set the REDLINE_AUTHOR environment "
+                  "variable) -- this tool has no default attribution.")
 
     old_text = open(args.old, encoding="utf-8").read()
     new_text = open(args.new, encoding="utf-8").read()

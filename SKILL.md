@@ -27,11 +27,19 @@ through an intermediate Word conversion first.
 
 Run it as:
 ```
-python3 scripts/build_redline.py OLD.md NEW.md OUT.docx --author "Your Name"
+python3 scripts/build_redline.py OLD.md NEW.md OUT.docx --author "Your Org"
 ```
-`--author` names the revision author shown in Word's reviewer list (default
-`"AI Redline"`). `--date` pins an ISO-8601 UTC timestamp instead of "now",
-useful for reproducible output.
+`--author` names the revision author shown in Word's and Google Docs'
+reviewer list, and is **required** — pass it, or set the `REDLINE_AUTHOR`
+environment variable once (e.g. in your shell profile or CI config) so you
+don't have to pass it on every call. There is deliberately no built-in
+default: this is a shared public tool, used by whoever clones it and by
+whatever agent runs it, so it has no org name or agent name of its own to
+reach for. A generic placeholder (an AI's name, a made-up org) ending up
+in someone's reviewed document unannounced is worse than the tool simply
+refusing to guess — pass `--author` or set `REDLINE_AUTHOR`, or the CLI
+exits with an error telling you to. `--date` pins an ISO-8601 UTC timestamp
+instead of "now", useful for reproducible output.
 
 Requires `python3-docx` and `python3-lxml` (`apt-get install python3-docx
 python3-lxml` on Debian/Ubuntu, or `pip install python-docx lxml`). `pandoc`
@@ -61,13 +69,25 @@ is optional — only needed to spot-check output (see below), not to generate it
 
 ## What it does NOT do
 - Not a general CommonMark/GFM engine. Supported inline syntax: `**bold**`,
-  `_italic_` / single `*italic*`, `~strike~` / `~~strike~~` (any run length
-  of `~` toggles strike), and `` `code` `` spans (rendered literal, not
-  monospaced). Links, images, footnotes, numbered lists, and nested lists
+  `_italic_` / `*italic*`, `~strike~` / `~~strike~~`, and `` `code` `` spans
+  (rendered literal, not monospaced). Each requires a matching closing
+  delimiter later in the same block — an unpaired `_`, `*`, or `~` (a
+  snake_case word, a stray tilde) is treated as a literal character rather
+  than toggling formatting on for the rest of the block. Delimiters nest
+  correctly when one opens inside another and closes before it (`**bold
+  _and italic_**`), but two separate spans placed side by side are not
+  re-merged. Links, images, footnotes, numbered lists, and nested lists
   beyond one level are not parsed — they pass through as literal text in a
   plain paragraph rather than causing an error, so output stays readable
   even outside the supported subset, just without that element's intended
   structure.
+- Does not silently drop table cells. A row whose cell count doesn't match
+  its own table's header raises an error naming the row, rather than
+  truncating the extra cells — a ragged/hand-edited markdown table is a
+  mistake worth surfacing, not swallowing. Old and new table versions are
+  allowed to have genuinely different column counts (a column added or
+  removed is a valid edit); only a row disagreeing with *its own* header is
+  an error.
 - Does not detect moved content as "moved." If a paragraph relocates to a
   different section with identical text, `SequenceMatcher`'s longest-match
   behavior may mark it unchanged even though its surrounding context
@@ -104,3 +124,11 @@ syntax characters, which plain-text extraction drops). A regression that
 corrupts tracked-change nesting or loses content will show up as a mismatch
 in one or both reconstructions. `scripts/verify_redline.sh` runs both
 checks and asserts a handful of expected substrings from each file.
+
+This check has a known blind spot: pandoc's own `--track-changes=accept`
+doesn't fully honor row-level table deletion (`w:trPr`/`w:del`) — it blanks
+a deleted row's cell text but still renders an empty row, even though the
+underlying XML is spec-correct and matches the already-verified row
+*insertion* pattern exactly. Table-row deletion was confirmed correct by
+direct XML inspection, not by this round-trip; a real Word or Google Docs
+accept-all is the authoritative check if that path changes again.
